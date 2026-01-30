@@ -20,8 +20,8 @@ parts:
     plugin: charm
     source: .
 
-requires: 
-  traefik_route:
+requires:
+  traefik-route:
     interface: traefik_route
     limit: 1
     
