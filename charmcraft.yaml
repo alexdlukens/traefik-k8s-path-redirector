@@ -2,16 +2,10 @@
 # See https://canonical-charmcraft.readthedocs-hosted.com/en/stable/reference/files/charmcraft-yaml-file/
 type: charm
 name: traefik-k8s-path-redirector
-title: Charm Template
-summary: A very short one-line summary of the charm.
+title: Traefik K8s Path Redirector
+summary: Redirect paths via Traefik.
 description: |
-  A single sentence that says what the charm is, concisely and memorably.
-
-  A paragraph of one to three short sentences, that describe what the charm does.
-
-  A third paragraph that explains what need the charm meets.
-
-  Finally, a paragraph that describes whom the charm is useful for.
+  A workloadless charm that publishes a Traefik route for path redirects.
 
 # Documentation:
 # https://canonical-charmcraft.readthedocs-hosted.com/en/stable/howto/build-guides/select-platforms/
@@ -35,32 +29,17 @@ parts:
 # https://canonical-juju.readthedocs-hosted.com/en/latest/user/reference/configuration/#application-configuration
 config:
   options:
-    # An example config option to customise the log level of the workload
-    log-level:
+    from_path:
       description: |
-        Configures the log level of gunicorn.
+        Path prefix to match for redirects.
 
-        Acceptable values are: "info", "debug", "warning", "error" and "critical"
-      default: "info"
+        Example: "/old" matches "/old" and "/old/anything".
+      default: "/from"
       type: string
+    to_path:
+      description: |
+        Target path prefix for redirects.
 
-
-# Your workload’s containers.
-# https://canonical-charmcraft.readthedocs-hosted.com/en/stable/reference/files/charmcraft-yaml-file/#containers
-containers:
-  httpbin:
-    resource: some-container-image
-
-
-# This field populates the Resources tab on Charmhub.
-# https://canonical-charmcraft.readthedocs-hosted.com/en/stable/reference/files/charmcraft-yaml-file/#resources
-resources:
-  # An OCI image resource for each container listed above.
-  # You may remove this if your charm will run without a workload sidecar container.
-  some-container-image:
-    type: oci-image
-    description: OCI image for the 'some-container' container
-    # The upstream-source field is ignored by Charmcraft and Juju, but it can be
-    # useful to developers in identifying the source of the OCI image.  It is also
-    # used by the 'canonical/charming-actions' Github action for automated releases.
-    upstream-source: some-repo/some-image:some-tag
+        Example: "/new" redirects "/old" and "/old/anything" to "/new".
+      default: "/to"
+      type: string

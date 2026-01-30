@@ -12,91 +12,86 @@ develop a new k8s charm using the Operator Framework:
 https://juju.is/docs/sdk/create-a-minimal-kubernetes-charm
 """
 
+import json
 import logging
-from typing import cast
+import re
+from typing import Optional
 
 import ops
 
-# Log messages can be retrieved using juju debug-log
 logger = logging.getLogger(__name__)
 
-VALID_LOG_LEVELS = ["info", "debug", "warning", "error", "critical"]
+RELATION_NAME = "traefik-route"
 
 
 class TraefikK8SPathRedirectorCharm(ops.CharmBase):
-    """Charm the service."""
+    """Publish a Traefik route for path redirects."""
 
     def __init__(self, framework: ops.Framework):
         super().__init__(framework)
-        framework.observe(self.on["httpbin"].pebble_ready, self._on_httpbin_pebble_ready)
-        framework.observe(self.on.config_changed, self._on_config_changed)
+        self.framework.observe(self.on.config_changed, self._on_reconcile)
+        relation_events = self.on[RELATION_NAME]
+        self.framework.observe(relation_events.relation_created, self._on_reconcile)
+        self.framework.observe(relation_events.relation_joined, self._on_reconcile)
+        self.framework.observe(relation_events.relation_changed, self._on_reconcile)
+        self.framework.observe(relation_events.relation_broken, self._on_reconcile)
+        self.framework.observe(self.on.leader_elected, self._on_reconcile)
+        self.framework.observe(self.on.upgrade_charm, self._on_reconcile)
 
-    def _on_httpbin_pebble_ready(self, event: ops.PebbleReadyEvent):
-        """Define and start a workload using the Pebble API.
+    def _on_reconcile(self, event: ops.EventBase) -> None:
+        from_path = str(self.model.config["from_path"]).strip()
+        to_path = str(self.model.config["to_path"]).strip()
+        error = self._validate_paths(from_path, to_path)
+        if error:
+            self.unit.status = ops.BlockedStatus(error)
+            return
 
-        Change this example to suit your needs. You'll need to specify the right entrypoint and
-        environment configuration for your specific workload.
+        relation = self.model.get_relation(RELATION_NAME)
+        if not relation:
+            self.unit.status = ops.WaitingStatus("waiting for traefik-route relation")
+            return
 
-        Learn more about interacting with Pebble at at https://juju.is/docs/sdk/pebble.
-        """
-        # Get a reference the container attribute on the PebbleReadyEvent
-        container = event.workload
-        # Add initial Pebble config layer using the Pebble API
-        container.add_layer("httpbin", self._pebble_layer, combine=True)
-        # Make Pebble reevaluate its plan, ensuring any services are started if enabled.
-        container.replan()
-        # Learn more about statuses in the SDK docs:
-        # https://juju.is/docs/sdk/constructs#heading--statuses
+        if not self.unit.is_leader():
+            self.unit.status = ops.WaitingStatus("waiting for leader")
+            return
+
+        relation.data[self.app]["config"] = json.dumps(
+            self._build_traefik_config(from_path, to_path)
+        )
         self.unit.status = ops.ActiveStatus()
 
-    def _on_config_changed(self, event: ops.ConfigChangedEvent):
-        """Handle changed configuration.
+    def _validate_paths(self, from_path: str, to_path: str) -> Optional[str]:
+        if not from_path or not from_path.startswith("/"):
+            return "from_path must start with '/'"
+        if not to_path or not to_path.startswith("/"):
+            return "to_path must start with '/'"
+        return None
 
-        Change this example to suit your needs. If you don't need to handle config, you can remove
-        this method.
-
-        Learn more about config at https://juju.is/docs/sdk/config
-        """
-        # Fetch the new config value
-        log_level = cast(str, self.model.config["log-level"]).lower()
-
-        # Do some validation of the configuration option
-        if log_level in VALID_LOG_LEVELS:
-            # The config is good, so update the configuration of the workload
-            container = self.unit.get_container("httpbin")
-            # Push an updated layer with the new config
-            try:
-                container.add_layer("httpbin", self._pebble_layer, combine=True)
-                container.replan()
-            except ops.pebble.ConnectionError:
-                # We were unable to connect to the Pebble API, so we defer this event
-                self.unit.status = ops.MaintenanceStatus("waiting for Pebble API")
-                event.defer()
-                return
-
-            logger.debug("Log level for gunicorn changed to '%s'", log_level)
-            self.unit.status = ops.ActiveStatus()
-        else:
-            # In this case, the config option is bad, so block the charm and notify the operator.
-            self.unit.status = ops.BlockedStatus(f"invalid log level: '{log_level}'")
-
-    @property
-    def _pebble_layer(self) -> ops.pebble.LayerDict:
-        """Return a dictionary representing a Pebble layer."""
+    def _build_traefik_config(self, from_path: str, to_path: str) -> dict:
+        router_name = f"{self.app.name}-path-redirect"
+        middleware_name = f"{self.app.name}-path-redirect-middleware"
+        escaped_from = re.escape(from_path)
+        redirect_regex = rf"^(https?://[^/]+){escaped_from}(.*)$"
+        replacement = f"${{1}}{to_path}${{2}}"
         return {
-            "summary": "httpbin layer",
-            "description": "pebble config layer for httpbin",
-            "services": {
-                "httpbin": {
-                    "override": "replace",
-                    "summary": "httpbin",
-                    "command": "gunicorn -b 0.0.0.0:80 httpbin:app -k gevent",
-                    "startup": "enabled",
-                    "environment": {
-                        "GUNICORN_CMD_ARGS": f"--log-level {self.model.config['log-level']}"
-                    },
-                }
-            },
+            "http": {
+                "routers": {
+                    router_name: {
+                        "rule": f"PathPrefix(`{from_path}`)",
+                        "service": "noop@internal",
+                        "middlewares": [middleware_name],
+                    }
+                },
+                "middlewares": {
+                    middleware_name: {
+                        "redirectRegex": {
+                            "regex": redirect_regex,
+                            "replacement": replacement,
+                            "permanent": True,
+                        }
+                    }
+                },
+            }
         }
 
 
