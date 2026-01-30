@@ -3,92 +3,101 @@
 #
 # Learn more about testing at: https://juju.is/docs/sdk/testing
 
-import ops
-import ops.pebble
+import json
+
 from ops import testing
 
-from charm import TraefikK8SPathRedirectorCharm
+from charm import RELATION_NAME, TraefikK8SPathRedirectorCharm
 
 
-def test_httpbin_pebble_ready():
-    # Arrange:
+def test_waiting_without_relation():
     ctx = testing.Context(TraefikK8SPathRedirectorCharm)
-    container = testing.Container("httpbin", can_connect=True)
-    state_in = testing.State(containers={container})
+    state_in = testing.State(config={"from_path": "/from", "to_path": "/to"})
 
-    # Act:
-    state_out = ctx.run(ctx.on.pebble_ready(container), state_in)
+    state_out = ctx.run(ctx.on.config_changed(), state_in)
 
-    # Assert:
-    updated_plan = state_out.get_container(container.name).plan
-    expected_plan = {
-        "services": {
-            "httpbin": {
-                "override": "replace",
-                "summary": "httpbin",
-                "command": "gunicorn -b 0.0.0.0:80 httpbin:app -k gevent",
-                "startup": "enabled",
-                "environment": {"GUNICORN_CMD_ARGS": "--log-level info"},
-            }
-        },
-    }
-    assert expected_plan == updated_plan
-    assert (
-        state_out.get_container(container.name).service_statuses["httpbin"]
-        == ops.pebble.ServiceStatus.ACTIVE
-    )
-    assert state_out.unit_status == testing.ActiveStatus()
+    assert isinstance(state_out.unit_status, testing.WaitingStatus)
 
 
-def test_config_changed_valid_can_connect():
-    """Test a config-changed event when the config is valid and the container can be reached."""
-    # Arrange:
-    ctx = testing.Context(TraefikK8SPathRedirectorCharm)  # The default config will be read from charmcraft.yaml
-    container = testing.Container("httpbin", can_connect=True)
+def test_invalid_config_blocks():
+    ctx = testing.Context(TraefikK8SPathRedirectorCharm)
     state_in = testing.State(
-        containers={container},
-        config={"log-level": "debug"},  # This is the config the charmer passed with `juju config`
+        config={"from_path": "from", "to_path": "/to", "from_path_is_regex": False}
     )
 
-    # Act:
     state_out = ctx.run(ctx.on.config_changed(), state_in)
 
-    # Assert:
-    updated_plan = state_out.get_container(container.name).plan
-    gunicorn_args = updated_plan.services["httpbin"].environment["GUNICORN_CMD_ARGS"]
-    assert gunicorn_args == "--log-level debug"
+    assert isinstance(state_out.unit_status, testing.BlockedStatus)
+    assert "from_path" in state_out.unit_status.message
+
+
+def test_relation_data_published():
+    ctx = testing.Context(TraefikK8SPathRedirectorCharm)
+    relation = testing.Relation(
+        endpoint=RELATION_NAME, interface="traefik_route", remote_app_name="traefik-k8s"
+    )
+    state_in = testing.State(
+        leader=True,
+        relations={relation},
+        config={"from_path": "/from", "to_path": "/to", "from_path_is_regex": False},
+    )
+
+    state_out = ctx.run(ctx.on.relation_joined(relation), state_in)
+
+    relation_out = state_out.get_relation(relation.id)
+    route_config = json.loads(relation_out.local_app_data["config"])
+    router_name = "traefik-k8s-path-redirector-path-redirect"
+    middleware_name = "traefik-k8s-path-redirector-path-redirect-middleware"
+    router = route_config["http"]["routers"][router_name]
+    middleware = route_config["http"]["middlewares"][middleware_name]
+    assert router["rule"] == "PathPrefix(`/from`)"
+    assert router["middlewares"] == [middleware_name]
+    assert middleware["redirectRegex"]["replacement"] == "${1}/to${2}"
     assert state_out.unit_status == testing.ActiveStatus()
 
 
-def test_config_changed_valid_cannot_connect():
-    """Test a config-changed event when the config is valid but the container cannot be reached.
-
-    We expect to end up in MaintenanceStatus waiting for the deferred event to
-    be retried.
-    """
-    # Arrange:
+def test_regex_from_path_allowed():
     ctx = testing.Context(TraefikK8SPathRedirectorCharm)
-    container = testing.Container("httpbin", can_connect=False)
-    state_in = testing.State(containers={container}, config={"log-level": "debug"})
+    relation = testing.Relation(
+        endpoint=RELATION_NAME, interface="traefik_route", remote_app_name="traefik-k8s"
+    )
+    state_in = testing.State(
+        leader=True,
+        relations={relation},
+        config={"from_path": "^/old(/.*)?$", "to_path": "/new", "from_path_is_regex": True},
+    )
 
-    # Act:
-    state_out = ctx.run(ctx.on.config_changed(), state_in)
+    state_out = ctx.run(ctx.on.relation_joined(relation), state_in)
 
-    # Assert:
-    assert isinstance(state_out.unit_status, testing.MaintenanceStatus)
+    relation_out = state_out.get_relation(relation.id)
+    route_config = json.loads(relation_out.local_app_data["config"])
+    router_name = "traefik-k8s-path-redirector-path-redirect"
+    middleware_name = "traefik-k8s-path-redirector-path-redirect-middleware"
+    router = route_config["http"]["routers"][router_name]
+    middleware = route_config["http"]["middlewares"][middleware_name]
+    assert router["rule"] == "PathRegexp(`^/old(/.*)?$`)"
+    assert middleware["redirectRegex"]["regex"] == "^(https?://[^/]+)/old(/.*)?(.*)$"
 
 
-def test_config_changed_invalid():
-    """Test a config-changed event when the config is invalid."""
-    # Arrange:
+def test_absolute_url_to_path_allowed():
     ctx = testing.Context(TraefikK8SPathRedirectorCharm)
-    container = testing.Container("httpbin", can_connect=True)
-    invalid_level = "foobar"
-    state_in = testing.State(containers={container}, config={"log-level": invalid_level})
+    relation = testing.Relation(
+        endpoint=RELATION_NAME, interface="traefik_route", remote_app_name="traefik-k8s"
+    )
+    state_in = testing.State(
+        leader=True,
+        relations={relation},
+        config={
+            "from_path": "/from",
+            "to_path": "https://ubuntu.net/hello",
+            "from_path_is_regex": False,
+        },
+    )
 
-    # Act:
-    state_out = ctx.run(ctx.on.config_changed(), state_in)
+    state_out = ctx.run(ctx.on.relation_joined(relation), state_in)
 
-    # Assert:
-    assert isinstance(state_out.unit_status, testing.BlockedStatus)
-    assert invalid_level in state_out.unit_status.message
+    relation_out = state_out.get_relation(relation.id)
+    route_config = json.loads(relation_out.local_app_data["config"])
+    middleware_name = "traefik-k8s-path-redirector-path-redirect-middleware"
+    middleware = route_config["http"]["middlewares"][middleware_name]
+    assert middleware["redirectRegex"]["replacement"] == "https://ubuntu.net/hello${2}"

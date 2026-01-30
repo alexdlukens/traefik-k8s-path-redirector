@@ -21,7 +21,7 @@ import ops
 
 logger = logging.getLogger(__name__)
 
-RELATION_NAME = "traefik-route"
+RELATION_NAME = "traefik_route"
 
 
 class TraefikK8SPathRedirectorCharm(ops.CharmBase):
@@ -41,14 +41,15 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
     def _on_reconcile(self, event: ops.EventBase) -> None:
         from_path = str(self.model.config["from_path"]).strip()
         to_path = str(self.model.config["to_path"]).strip()
-        error = self._validate_paths(from_path, to_path)
+        from_path_is_regex = bool(self.model.config["from_path_is_regex"])
+        error = self._validate_paths(from_path, to_path, from_path_is_regex)
         if error:
             self.unit.status = ops.BlockedStatus(error)
             return
 
         relation = self.model.get_relation(RELATION_NAME)
         if not relation:
-            self.unit.status = ops.WaitingStatus("waiting for traefik-route relation")
+            self.unit.status = ops.WaitingStatus("waiting for traefik_route relation")
             return
 
         if not self.unit.is_leader():
@@ -56,28 +57,45 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
             return
 
         relation.data[self.app]["config"] = json.dumps(
-            self._build_traefik_config(from_path, to_path)
+            self._build_traefik_config(from_path, to_path, from_path_is_regex)
         )
         self.unit.status = ops.ActiveStatus()
 
-    def _validate_paths(self, from_path: str, to_path: str) -> Optional[str]:
-        if not from_path or not from_path.startswith("/"):
+    def _validate_paths(
+        self, from_path: str, to_path: str, from_path_is_regex: bool
+    ) -> Optional[str]:
+        if not from_path:
+            return "from_path must be set"
+        if not from_path_is_regex and not from_path.startswith("/"):
             return "from_path must start with '/'"
-        if not to_path or not to_path.startswith("/"):
-            return "to_path must start with '/'"
+        if not to_path:
+            return "to_path must be set"
+        if not self._is_absolute_url(to_path) and not to_path.startswith("/"):
+            return "to_path must start with '/' or be an absolute URL"
         return None
 
-    def _build_traefik_config(self, from_path: str, to_path: str) -> dict:
+    def _build_traefik_config(
+        self, from_path: str, to_path: str, from_path_is_regex: bool
+    ) -> dict:
         router_name = f"{self.app.name}-path-redirect"
         middleware_name = f"{self.app.name}-path-redirect-middleware"
-        escaped_from = re.escape(from_path)
+        rule_type = "PathRegexp" if from_path_is_regex else "PathPrefix"
+        escaped_from = (
+            self._normalize_path_regex(from_path)
+            if from_path_is_regex
+            else re.escape(from_path)
+        )
         redirect_regex = rf"^(https?://[^/]+){escaped_from}(.*)$"
-        replacement = f"${{1}}{to_path}${{2}}"
+        replacement = (
+            f"{to_path}${{2}}"
+            if self._is_absolute_url(to_path)
+            else f"${{1}}{to_path}${{2}}"
+        )
         return {
             "http": {
                 "routers": {
                     router_name: {
-                        "rule": f"PathPrefix(`{from_path}`)",
+                        "rule": f"{rule_type}(`{from_path}`)",
                         "service": "noop@internal",
                         "middlewares": [middleware_name],
                     }
@@ -93,6 +111,18 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
                 },
             }
         }
+
+    @staticmethod
+    def _normalize_path_regex(value: str) -> str:
+        if value.startswith("^"):
+            value = value[1:]
+        if value.endswith("$"):
+            value = value[:-1]
+        return value
+
+    @staticmethod
+    def _is_absolute_url(value: str) -> bool:
+        return value.startswith("http://") or value.startswith("https://")
 
 
 if __name__ == "__main__":  # pragma: nocover
