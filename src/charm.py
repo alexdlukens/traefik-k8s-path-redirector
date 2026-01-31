@@ -16,9 +16,8 @@ import logging
 import re
 from typing import Optional
 
-import yaml
-
 import ops
+import yaml
 from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer
 
 logger = logging.getLogger(__name__)
@@ -64,14 +63,7 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
             self.unit.status = ops.BlockedStatus(error)
             return
 
-        regex_redirects, error = self._parse_redirect_map(
-            self.model.config["regex_path_redirects"], "regex_path_redirects"
-        )
-        if error:
-            self.unit.status = ops.BlockedStatus(error)
-            return
-
-        error = self._validate_paths(direct_redirects, regex_redirects)
+        error = self._validate_paths(direct_redirects)
         if error:
             self.unit.status = ops.BlockedStatus(error)
             return
@@ -91,37 +83,25 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
             return
 
         self._route_requirer.submit_to_traefik(
-            config=self._build_traefik_config(direct_redirects, regex_redirects)
+            config=self._build_traefik_config(direct_redirects)
         )
         self.unit.status = ops.ActiveStatus()
 
-    def _validate_paths(
-        self, direct_redirects: dict[str, str], regex_redirects: dict[str, str]
-    ) -> Optional[str]:
-        if not direct_redirects and not regex_redirects:
+    def _validate_paths(self, direct_redirects: dict[str, str]) -> Optional[str]:
+        if not direct_redirects:
             return "at least one redirect must be configured"
 
-        error = self._validate_redirect_map(
-            direct_redirects, "direct_path_redirects", from_path_is_regex=False
-        )
-        if error:
-            return error
-
-        return self._validate_redirect_map(
-            regex_redirects, "regex_path_redirects", from_path_is_regex=True
-        )
+        return self._validate_redirect_map(direct_redirects, "direct_path_redirects")
 
     def _validate_redirect_map(
         self,
         redirects: dict[str, str],
         name: str,
-        *,
-        from_path_is_regex: bool,
     ) -> Optional[str]:
         for from_path, to_path in redirects.items():
             if not from_path:
                 return f"{name} keys must be non-empty"
-            if not from_path_is_regex and not from_path.startswith("/"):
+            if not from_path.startswith("/"):
                 return f"{name} keys must start with '/'"
             if not to_path:
                 return f"{name} values must be non-empty"
@@ -129,22 +109,14 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
                 return f"{name} values must start with '/' or be an absolute URL"
         return None
 
-    def _build_traefik_config(
-        self, direct_redirects: dict[str, str], regex_redirects: dict[str, str]
-    ) -> dict:
+    def _build_traefik_config(self, direct_redirects: dict[str, str]) -> dict:
         routers: dict[str, dict] = {}
         middlewares: dict[str, dict] = {}
         index = 0
 
         for from_path, to_path in direct_redirects.items():
             self._add_redirect_entry(
-                routers, middlewares, index, from_path, to_path, from_path_is_regex=False
-            )
-            index += 1
-
-        for from_path, to_path in regex_redirects.items():
-            self._add_redirect_entry(
-                routers, middlewares, index, from_path, to_path, from_path_is_regex=True
+                routers, middlewares, index, from_path, to_path
             )
             index += 1
 
@@ -157,27 +129,16 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
         index: int,
         from_path: str,
         to_path: str,
-        *,
-        from_path_is_regex: bool,
     ) -> None:
         base_name = f"{self.app.name}-path-redirect-{index}"
         router_name = base_name
         tls_router_name = f"{base_name}-tls"
         middleware_name = f"{base_name}-middleware"
-        rule_type = "PathRegexp" if from_path_is_regex else "PathPrefix"
+        rule_type = "PathPrefix"
 
-        if from_path_is_regex:
-            escaped_from = self._normalize_path_regex(from_path)
-            redirect_regex = rf"^(https?://[^/]+){escaped_from}(.*)$"
-            replacement = (
-                f"{to_path}${{2}}"
-                if self._is_absolute_url(to_path)
-                else f"${{1}}{to_path}${{2}}"
-            )
-        else:
-            escaped_from = re.escape(from_path)
-            redirect_regex = rf"^(https?://[^/]+){escaped_from}$"
-            replacement = to_path if self._is_absolute_url(to_path) else f"${{1}}{to_path}"
+        escaped_from = re.escape(from_path)
+        redirect_regex = rf"^(https?://[^/]+){escaped_from}$"
+        replacement = to_path if self._is_absolute_url(to_path) else f"${{1}}{to_path}"
 
         routers[router_name] = {
             "rule": f"{rule_type}(`{from_path}`)",
@@ -225,14 +186,6 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
             cleaned_value = str(val).strip()
             result[cleaned_key] = cleaned_value
         return result, None
-
-    @staticmethod
-    def _normalize_path_regex(value: str) -> str:
-        if value.startswith("^"):
-            value = value[1:]
-        if value.endswith("$"):
-            value = value[:-1]
-        return value
 
     @staticmethod
     def _is_absolute_url(value: str) -> bool:

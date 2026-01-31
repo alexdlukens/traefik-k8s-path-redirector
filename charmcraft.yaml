@@ -43,11 +43,3 @@ config:
           {"/old": "/new", "/docs": "https://ubuntu.net/docs"}
       default: "{}"
       type: string
-    regex_path_redirects:
-      description: |
-        Map of regex path redirects (PathRegexp).
-
-        Example:
-          {"^/old(/.*)?$": "/new"}
-      default: "{}"
-      type: string
