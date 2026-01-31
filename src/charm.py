@@ -34,9 +34,7 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
         self.framework.observe(self.on.config_changed, self._on_reconcile)
         self.framework.observe(self.on.leader_elected, self._on_reconcile)
         self.framework.observe(self.on.upgrade_charm, self._on_reconcile)
-        self.framework.observe(
-            self.on[RELATION_NAME].relation_created, self._on_relation_created
-        )
+        self.framework.observe(self.on[RELATION_NAME].relation_created, self._on_relation_created)
         self._ensure_route_requirer()
 
     def _on_relation_created(self, event: ops.RelationEvent) -> None:
@@ -82,9 +80,7 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
             self.unit.status = ops.WaitingStatus("waiting for traefik-route relation")
             return
 
-        self._route_requirer.submit_to_traefik(
-            config=self._build_traefik_config(direct_redirects)
-        )
+        self._route_requirer.submit_to_traefik(config=self._build_traefik_config(direct_redirects))
         self.unit.status = ops.ActiveStatus()
 
     def _validate_paths(self, direct_redirects: dict[str, str]) -> Optional[str]:
@@ -115,9 +111,7 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
         index = 0
 
         for from_path, to_path in direct_redirects.items():
-            self._add_redirect_entry(
-                routers, middlewares, index, from_path, to_path
-            )
+            self._add_redirect_entry(routers, middlewares, index, from_path, to_path)
             index += 1
 
         return {"http": {"routers": routers, "middlewares": middlewares}}

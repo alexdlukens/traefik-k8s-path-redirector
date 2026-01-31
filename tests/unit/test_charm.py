@@ -4,7 +4,6 @@
 # Learn more about testing at: https://juju.is/docs/sdk/testing
 
 import yaml
-
 from ops import testing
 
 from charm import RELATION_NAME, TraefikK8SPathRedirectorCharm
@@ -21,9 +20,7 @@ def test_waiting_without_relation():
 
 def test_invalid_config_blocks():
     ctx = testing.Context(TraefikK8SPathRedirectorCharm)
-    state_in = testing.State(
-        config={"direct_path_redirects": "{'from': '/to'}"}
-    )
+    state_in = testing.State(config={"direct_path_redirects": "{'from': '/to'}"})
 
     state_out = ctx.run(ctx.on.config_changed(), state_in)
 
