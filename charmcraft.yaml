@@ -35,23 +35,19 @@ requires:
 # https://canonical-juju.readthedocs-hosted.com/en/latest/user/reference/configuration/#application-configuration
 config:
   options:
-    from_path:
+    direct_path_redirects:
       description: |
-        Path prefix to match for redirects.
+        Map of direct path redirects (PathPrefix).
 
-        Example: "/old" matches "/old" and "/old/anything".
-      default: "/from"
+        Example:
+          {"/old": "/new", "/docs": "https://ubuntu.net/docs"}
+      default: "{}"
       type: string
-    to_path:
+    regex_path_redirects:
       description: |
-        Target path prefix for redirects.
+        Map of regex path redirects (PathRegexp).
 
-        Example: "/new" redirects "/old" and "/old/anything" to "/new".
-        You can also use an absolute URL like "https://ubuntu.net/hello".
-      default: "/to"
+        Example:
+          {"^/old(/.*)?$": "/new"}
+      default: "{}"
       type: string
-    from_path_is_regex:
-      description: |
-        Interpret from_path as a regex for PathRegexp matching.
-      default: false
-      type: boolean

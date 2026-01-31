@@ -16,6 +16,8 @@ import logging
 import re
 from typing import Optional
 
+import yaml
+
 import ops
 from charms.traefik_k8s.v0.traefik_route import TraefikRouteRequirer
 
@@ -55,10 +57,21 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
         self.framework.observe(self._route_requirer.on.ready, self._on_route_ready)
 
     def _on_reconcile(self, event: ops.EventBase) -> None:
-        from_path = str(self.model.config["from_path"]).strip()
-        to_path = str(self.model.config["to_path"]).strip()
-        from_path_is_regex = bool(self.model.config["from_path_is_regex"])
-        error = self._validate_paths(from_path, to_path, from_path_is_regex)
+        direct_redirects, error = self._parse_redirect_map(
+            self.model.config["direct_path_redirects"], "direct_path_redirects"
+        )
+        if error:
+            self.unit.status = ops.BlockedStatus(error)
+            return
+
+        regex_redirects, error = self._parse_redirect_map(
+            self.model.config["regex_path_redirects"], "regex_path_redirects"
+        )
+        if error:
+            self.unit.status = ops.BlockedStatus(error)
+            return
+
+        error = self._validate_paths(direct_redirects, regex_redirects)
         if error:
             self.unit.status = ops.BlockedStatus(error)
             return
@@ -78,30 +91,81 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
             return
 
         self._route_requirer.submit_to_traefik(
-            config=self._build_traefik_config(from_path, to_path, from_path_is_regex)
+            config=self._build_traefik_config(direct_redirects, regex_redirects)
         )
         self.unit.status = ops.ActiveStatus()
 
     def _validate_paths(
-        self, from_path: str, to_path: str, from_path_is_regex: bool
+        self, direct_redirects: dict[str, str], regex_redirects: dict[str, str]
     ) -> Optional[str]:
-        if not from_path:
-            return "from_path must be set"
-        if not from_path_is_regex and not from_path.startswith("/"):
-            return "from_path must start with '/'"
-        if not to_path:
-            return "to_path must be set"
-        if not self._is_absolute_url(to_path) and not to_path.startswith("/"):
-            return "to_path must start with '/' or be an absolute URL"
+        if not direct_redirects and not regex_redirects:
+            return "at least one redirect must be configured"
+
+        error = self._validate_redirect_map(
+            direct_redirects, "direct_path_redirects", from_path_is_regex=False
+        )
+        if error:
+            return error
+
+        return self._validate_redirect_map(
+            regex_redirects, "regex_path_redirects", from_path_is_regex=True
+        )
+
+    def _validate_redirect_map(
+        self,
+        redirects: dict[str, str],
+        name: str,
+        *,
+        from_path_is_regex: bool,
+    ) -> Optional[str]:
+        for from_path, to_path in redirects.items():
+            if not from_path:
+                return f"{name} keys must be non-empty"
+            if not from_path_is_regex and not from_path.startswith("/"):
+                return f"{name} keys must start with '/'"
+            if not to_path:
+                return f"{name} values must be non-empty"
+            if not self._is_absolute_url(to_path) and not to_path.startswith("/"):
+                return f"{name} values must start with '/' or be an absolute URL"
         return None
 
     def _build_traefik_config(
-        self, from_path: str, to_path: str, from_path_is_regex: bool
+        self, direct_redirects: dict[str, str], regex_redirects: dict[str, str]
     ) -> dict:
-        router_name = f"{self.app.name}-path-redirect"
-        tls_router_name = f"{self.app.name}-path-redirect-tls"
-        middleware_name = f"{self.app.name}-path-redirect-middleware"
+        routers: dict[str, dict] = {}
+        middlewares: dict[str, dict] = {}
+        index = 0
+
+        for from_path, to_path in direct_redirects.items():
+            self._add_redirect_entry(
+                routers, middlewares, index, from_path, to_path, from_path_is_regex=False
+            )
+            index += 1
+
+        for from_path, to_path in regex_redirects.items():
+            self._add_redirect_entry(
+                routers, middlewares, index, from_path, to_path, from_path_is_regex=True
+            )
+            index += 1
+
+        return {"http": {"routers": routers, "middlewares": middlewares}}
+
+    def _add_redirect_entry(
+        self,
+        routers: dict[str, dict],
+        middlewares: dict[str, dict],
+        index: int,
+        from_path: str,
+        to_path: str,
+        *,
+        from_path_is_regex: bool,
+    ) -> None:
+        base_name = f"{self.app.name}-path-redirect-{index}"
+        router_name = base_name
+        tls_router_name = f"{base_name}-tls"
+        middleware_name = f"{base_name}-middleware"
         rule_type = "PathRegexp" if from_path_is_regex else "PathPrefix"
+
         if from_path_is_regex:
             escaped_from = self._normalize_path_regex(from_path)
             redirect_regex = rf"^(https?://[^/]+){escaped_from}(.*)$"
@@ -114,32 +178,53 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
             escaped_from = re.escape(from_path)
             redirect_regex = rf"^(https?://[^/]+){escaped_from}$"
             replacement = to_path if self._is_absolute_url(to_path) else f"${{1}}{to_path}"
-        return {
-            "http": {
-                "routers": {
-                    router_name: {
-                        "rule": f"{rule_type}(`{from_path}`)",
-                        "service": "noop@internal",
-                        "middlewares": [middleware_name],
-                    },
-                    tls_router_name: {
-                        "rule": f"{rule_type}(`{from_path}`)",
-                        "service": "noop@internal",
-                        "middlewares": [middleware_name],
-                        "tls": {},
-                    }
-                },
-                "middlewares": {
-                    middleware_name: {
-                        "redirectRegex": {
-                            "regex": redirect_regex,
-                            "replacement": replacement,
-                            "permanent": True,
-                        }
-                    }
-                },
+
+        routers[router_name] = {
+            "rule": f"{rule_type}(`{from_path}`)",
+            "service": "noop@internal",
+            "middlewares": [middleware_name],
+        }
+        routers[tls_router_name] = {
+            "rule": f"{rule_type}(`{from_path}`)",
+            "service": "noop@internal",
+            "middlewares": [middleware_name],
+            "tls": {},
+        }
+        middlewares[middleware_name] = {
+            "redirectRegex": {
+                "regex": redirect_regex,
+                "replacement": replacement,
+                "permanent": True,
             }
         }
+
+    @staticmethod
+    def _parse_redirect_map(value: object, name: str) -> tuple[dict[str, str], Optional[str]]:
+        if value is None:
+            return {}, None
+
+        if isinstance(value, dict):
+            data = value
+        else:
+            raw_value = str(value).strip()
+            if not raw_value:
+                return {}, None
+            try:
+                data = yaml.safe_load(raw_value)
+            except yaml.YAMLError as exc:
+                return {}, f"{name} must be a map: {exc}"
+
+        if data is None:
+            return {}, None
+        if not isinstance(data, dict):
+            return {}, f"{name} must be a map"
+
+        result: dict[str, str] = {}
+        for key, val in data.items():
+            cleaned_key = str(key).strip()
+            cleaned_value = str(val).strip()
+            result[cleaned_key] = cleaned_value
+        return result, None
 
     @staticmethod
     def _normalize_path_regex(value: str) -> str:

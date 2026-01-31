@@ -12,7 +12,7 @@ from charm import RELATION_NAME, TraefikK8SPathRedirectorCharm
 
 def test_waiting_without_relation():
     ctx = testing.Context(TraefikK8SPathRedirectorCharm)
-    state_in = testing.State(config={"from_path": "/from", "to_path": "/to"})
+    state_in = testing.State(config={"direct_path_redirects": {"/from": "/to"}})
 
     state_out = ctx.run(ctx.on.config_changed(), state_in)
 
@@ -22,13 +22,13 @@ def test_waiting_without_relation():
 def test_invalid_config_blocks():
     ctx = testing.Context(TraefikK8SPathRedirectorCharm)
     state_in = testing.State(
-        config={"from_path": "from", "to_path": "/to", "from_path_is_regex": False}
+        config={"direct_path_redirects": {"from": "/to"}}
     )
 
     state_out = ctx.run(ctx.on.config_changed(), state_in)
 
     assert isinstance(state_out.unit_status, testing.BlockedStatus)
-    assert "from_path" in state_out.unit_status.message
+    assert "direct_path_redirects" in state_out.unit_status.message
 
 
 def test_relation_data_published():
@@ -39,16 +39,16 @@ def test_relation_data_published():
     state_in = testing.State(
         leader=True,
         relations={relation},
-        config={"from_path": "/from", "to_path": "/to", "from_path_is_regex": False},
+        config={"direct_path_redirects": {"/from": "/to"}},
     )
 
     state_out = ctx.run(ctx.on.relation_created(relation), state_in)
 
     relation_out = state_out.get_relation(relation.id)
     route_config = yaml.safe_load(relation_out.local_app_data["config"])
-    router_name = "traefik-k8s-path-redirector-path-redirect"
-    tls_router_name = "traefik-k8s-path-redirector-path-redirect-tls"
-    middleware_name = "traefik-k8s-path-redirector-path-redirect-middleware"
+    router_name = "traefik-k8s-path-redirector-path-redirect-0"
+    tls_router_name = "traefik-k8s-path-redirector-path-redirect-0-tls"
+    middleware_name = "traefik-k8s-path-redirector-path-redirect-0-middleware"
     router = route_config["http"]["routers"][router_name]
     tls_router = route_config["http"]["routers"][tls_router_name]
     middleware = route_config["http"]["middlewares"][middleware_name]
@@ -70,16 +70,16 @@ def test_regex_from_path_allowed():
     state_in = testing.State(
         leader=True,
         relations={relation},
-        config={"from_path": "^/old(/.*)?$", "to_path": "/new", "from_path_is_regex": True},
+        config={"regex_path_redirects": {"^/old(/.*)?$": "/new"}},
     )
 
     state_out = ctx.run(ctx.on.relation_created(relation), state_in)
 
     relation_out = state_out.get_relation(relation.id)
     route_config = yaml.safe_load(relation_out.local_app_data["config"])
-    router_name = "traefik-k8s-path-redirector-path-redirect"
-    tls_router_name = "traefik-k8s-path-redirector-path-redirect-tls"
-    middleware_name = "traefik-k8s-path-redirector-path-redirect-middleware"
+    router_name = "traefik-k8s-path-redirector-path-redirect-0"
+    tls_router_name = "traefik-k8s-path-redirector-path-redirect-0-tls"
+    middleware_name = "traefik-k8s-path-redirector-path-redirect-0-middleware"
     router = route_config["http"]["routers"][router_name]
     tls_router = route_config["http"]["routers"][tls_router_name]
     middleware = route_config["http"]["middlewares"][middleware_name]
@@ -97,9 +97,7 @@ def test_absolute_url_to_path_allowed():
         leader=True,
         relations={relation},
         config={
-            "from_path": "/from",
-            "to_path": "https://ubuntu.net/hello",
-            "from_path_is_regex": False,
+            "direct_path_redirects": {"/from": "https://ubuntu.net/hello"},
         },
     )
 
@@ -107,6 +105,6 @@ def test_absolute_url_to_path_allowed():
 
     relation_out = state_out.get_relation(relation.id)
     route_config = yaml.safe_load(relation_out.local_app_data["config"])
-    middleware_name = "traefik-k8s-path-redirector-path-redirect-middleware"
+    middleware_name = "traefik-k8s-path-redirector-path-redirect-0-middleware"
     middleware = route_config["http"]["middlewares"][middleware_name]
     assert middleware["redirectRegex"]["replacement"] == "https://ubuntu.net/hello"
