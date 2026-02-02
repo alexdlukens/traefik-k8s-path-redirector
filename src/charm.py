@@ -128,7 +128,7 @@ class TraefikK8SPathRedirectorCharm(ops.CharmBase):
         router_name = base_name
         tls_router_name = f"{base_name}-tls"
         middleware_name = f"{base_name}-middleware"
-        rule_type = "PathPrefix"
+        rule_type = "Path"
 
         escaped_from = re.escape(from_path)
         redirect_regex = rf"^(https?://[^/]+){escaped_from}$"
