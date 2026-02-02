@@ -10,10 +10,12 @@ Use links instead.
 
 # traefik-k8s-path-redirector
 
-Charmhub package name: operator-template
+Charmhub package name: traefik-k8s-path-redirector
 More information: https://charmhub.io/traefik-k8s-path-redirector
 
-Describe your charm in one or two sentences.
+A workloadless charm that publishes a Traefik route for path redirects.
+
+Redirect to your content from the base domain. E.g. if `traefik-k8s` is serving your content at `https://jenkins.example.com/k8s-model-example-com-jenkins-k8s-0/`, use this charm with `direct_path_redirects='{"/": "/k8s-model-example-com-jenkins-k8s-0"}` to redirect to your app from `https://jenkins.example.com/`
 
 ## Other resources
 
